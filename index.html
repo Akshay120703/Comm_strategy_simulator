@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adversarial Communication Strategy Simulator</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div>
+        <h1>Adversarial Communication Strategy Simulator</h1>
+        <p>Visualize an adaptive transmitter and jammer co-evolving over a contested channel.</p>
+      </div>
+      <div class="badges">
+        <span class="badge">Frontend-only</span>
+        <span class="badge badge-accent">Discrete RL heuristic</span>
+      </div>
+    </header>
+
+    <section class="controls">
+      <div class="card">
+        <h3>Channel</h3>
+        <label>SNR (dB)
+          <input id="snrInput" type="number" value="18" step="1" />
+        </label>
+        <label>Bandwidth (MHz)
+          <input id="bwInput" type="number" value="20" step="1" />
+        </label>
+        <label>Noise Floor (mW/Hz)
+          <input id="noiseInput" type="number" value="0.02" step="0.01" />
+        </label>
+      </div>
+
+      <div class="card">
+        <h3>Jammer</h3>
+        <label>Max Power (mW)
+          <input id="jamPowerInput" type="number" value="80" step="5" />
+        </label>
+        <label>Max Span (bins)
+          <input id="jamSpanInput" type="number" value="8" step="1" />
+        </label>
+        <label class="checkbox">
+          <input id="jamAdaptiveToggle" type="checkbox" checked />
+          Adaptive (vs random)
+        </label>
+        <button id="mutateBtn">Inject Mutation</button>
+      </div>
+
+      <div class="card">
+        <h3>Transmitter</h3>
+        <label>Max Power (mW)
+          <input id="txPowerInput" type="number" value="100" step="5" />
+        </label>
+        <label>Learning Rate
+          <input id="lrInput" type="number" value="0.18" step="0.01" />
+        </label>
+        <label>Exploration (ε)
+          <input id="epsInput" type="number" value="0.08" step="0.01" />
+        </label>
+        <label class="checkbox">
+          <input id="freezeLearningToggle" type="checkbox" />
+          Freeze learning
+        </label>
+      </div>
+
+      <div class="card actions">
+        <button id="restartBtn" class="secondary">Reset Simulation</button>
+        <button id="pauseBtn">Pause</button>
+        <div class="status-line">
+          <span id="statusDot" class="dot live"></span>
+          <span id="statusText">Running</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="viz-grid">
+      <div class="card wide">
+        <div class="card-header">
+          <h3>Frequency Spectrum Interaction</h3>
+          <span class="hint">Heatmap of Tx vs Jam overlap across discrete bins.</span>
+        </div>
+        <canvas id="spectrumCanvas" width="900" height="220"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Throughput vs Jamming</h3>
+          <span class="hint">Non-linear collapse and recovery over time.</span>
+        </div>
+        <canvas id="throughputChart" height="200"></canvas>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h3>Strategy Evolution</h3>
+          <span class="hint">Recent decisions for both agents.</span>
+        </div>
+        <div class="timeline" id="timeline"></div>
+      </div>
+    </section>
+
+    <section class="details card">
+      <h3>Model Snapshot</h3>
+      <div class="state-grid" id="stateGrid"></div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
