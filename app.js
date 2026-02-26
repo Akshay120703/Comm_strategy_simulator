@@ -1,14 +1,24 @@
 // Adversarial Communication Strategy Simulator
 // Discrete-time RL-style adaptation for a transmitter and jammer.
 
-const BINS = 48; // frequency bins over the channel
-const TX_FREQ_SLOTS = 12; // discrete choices transmitter can hop across
+// ================= CONSTANTS =================
+
+const BINS = 48;
+const TX_FREQ_SLOTS = 12;
 const MODS = ["BPSK", "QPSK", "16QAM"];
-const MOD_EFF = { BPSK: 1, QPSK: 2, "16QAM": 4 };
 const TX_POWER_LEVELS = [0.45, 0.72, 1.0];
 const JAM_POWER_LEVELS = [0.35, 0.65, 1.0];
 const JAM_SPANS = [2, 4, 8, 12];
 const HISTORY_POINTS = 180;
+
+// Required SINR thresholds (dB) for modulation feasibility
+const MOD_SNR_REQ = {
+  BPSK: 3,
+  QPSK: 7,
+  "16QAM": 16,
+};
+
+// ================= STATE =================
 
 const dom = {};
 const state = {
@@ -23,18 +33,212 @@ const state = {
   spectrumCtx: null,
 };
 
+// ================= UTILITIES =================
+
 function byId(id) {
   return document.getElementById(id);
 }
 
+function linToDb(x) {
+  return 10 * Math.log10(x);
+}
+
+function dbToLin(db) {
+  return Math.pow(10, db / 10);
+}
+
+function argMax(arr) {
+  let best = 0;
+  for (let i = 1; i < arr.length; i++) if (arr[i] > arr[best]) best = i;
+  return best;
+}
+
+function pickAction(q, eps) {
+  if (Math.random() < eps) return Math.floor(Math.random() * q.length);
+  return argMax(q);
+}
+
+// ================= ACTION SPACES =================
+
+function buildActionSpace() {
+  const actions = [];
+  for (let f = 0; f < TX_FREQ_SLOTS; f++) {
+    for (const mod of MODS) {
+      for (const p of TX_POWER_LEVELS) {
+        actions.push({ fSlot: f, mod, p });
+      }
+    }
+  }
+  return actions;
+}
+
+function buildJamActions() {
+  const actions = [];
+  for (let f = 0; f < TX_FREQ_SLOTS; f++) {
+    for (const span of JAM_SPANS) {
+      for (const p of JAM_POWER_LEVELS) {
+        actions.push({ fSlot: f, span, p });
+      }
+    }
+  }
+  return actions;
+}
+
+const TX_ACTIONS = buildActionSpace();
+const JAM_ACTIONS = buildJamActions();
+
+// ================= DOM =================
+
 function setupDomRefs() {
   [
-    "snrInput",
-    "bwInput",
-    "noiseInput",
-    "jamPowerInput",
-    "jamSpanInput",
-    "txPowerInput",
+    "snrInput","bwInput","noiseInput","jamPowerInput","jamSpanInput",
+    "txPowerInput","lrInput","epsInput","freezeLearningToggle",
+    "jamAdaptiveToggle","mutateBtn","restartBtn","pauseBtn",
+    "statusDot","statusText","timeline","stateGrid","spectrumCanvas",
+  ].forEach(id => (dom[id] = byId(id)));
+}
+
+// ================= HELPERS =================
+
+function initQ(table, size) {
+  table.length = size;
+  for (let i = 0; i < size; i++) table[i] = 0;
+}
+
+function mapFreqSlotToBin(slot) {
+  const binsPerSlot = Math.floor(BINS / TX_FREQ_SLOTS);
+  const base = slot * binsPerSlot;
+  return Math.min(BINS - 1, base + Math.floor(binsPerSlot / 2));
+}
+
+function computeOverlap(txBin, jamCenter, spanBins) {
+  const half = Math.floor(spanBins / 2);
+  const start = Math.max(0, jamCenter - half);
+  const end = Math.min(BINS - 1, jamCenter + half);
+  if (txBin < start || txBin > end) return 0;
+  const dist = Math.abs(txBin - jamCenter) + 1;
+  return Math.max(0, 1 - dist / (half + 1));
+}
+
+// ================= SETTINGS =================
+
+function readSettings() {
+  return {
+    snrDb: Number(dom.snrInput.value),
+    bwMHz: Number(dom.bwInput.value),
+    jamMaxPower: Number(dom.jamPowerInput.value),
+    jamMaxSpan: Number(dom.jamSpanInput.value),
+    txMaxPower: Number(dom.txPowerInput.value),
+    lr: Number(dom.lrInput.value),
+    eps: Number(dom.epsInput.value),
+    freeze: dom.freezeLearningToggle.checked,
+    jamAdaptive: dom.jamAdaptiveToggle.checked,
+  };
+}
+
+// ================= SIMULATION =================
+
+function resetSimulation() {
+  state.t = 0;
+  initQ(state.tx.q, TX_ACTIONS.length);
+  initQ(state.jam.q, JAM_ACTIONS.length);
+  state.history = [];
+  state.paused = false;
+  dom.statusText.textContent = "Running";
+  dom.statusDot.classList.add("live");
+  dom.statusDot.classList.remove("paused");
+}
+
+function stepSimulation() {
+  const cfg = readSettings();
+  state.tx.lr = cfg.lr;
+  state.tx.eps = cfg.eps;
+  state.freezeLearning = cfg.freeze;
+  state.jamAdaptive = cfg.jamAdaptive;
+
+  const txIdx = pickAction(state.tx.q, state.freezeLearning ? 0 : state.tx.eps);
+  const txAct = TX_ACTIONS[txIdx];
+
+  const jamIdx = state.jamAdaptive
+    ? pickAction(state.jam.q, state.freezeLearning ? 0 : state.jam.eps)
+    : Math.floor(Math.random() * JAM_ACTIONS.length);
+
+  const jamAct = JAM_ACTIONS[jamIdx];
+
+  const txBin = mapFreqSlotToBin(txAct.fSlot);
+  const jamCenter = mapFreqSlotToBin(jamAct.fSlot);
+  const jamSpanBins = Math.min(jamAct.span, cfg.jamMaxSpan);
+
+  // ======== PHYSICALLY CONSISTENT MODEL ========
+
+  const txPower = cfg.txMaxPower * txAct.p;
+  const jamPower = cfg.jamMaxPower * jamAct.p;
+
+  const overlapFactor = computeOverlap(txBin, jamCenter, jamSpanBins);
+  const interference = jamPower * overlapFactor;
+
+  const snrLin = dbToLin(cfg.snrDb);
+  const noisePower = txPower / snrLin;
+
+  const signal = txPower;
+  const sinr = signal / (noisePower + interference);
+  const sinrDb = linToDb(sinr);
+
+  // Modulation feasibility
+  const requiredSnr = MOD_SNR_REQ[txAct.mod];
+  const modulationPenalty = sinrDb < requiredSnr ? -10 : 0;
+
+  const spectralEff = Math.log2(1 + sinr);
+  const bwHz = cfg.bwMHz * 1e6;
+  const throughputMbps = (bwHz / 1e6) * spectralEff;
+
+  const jammingIntensity = interference / (interference + noisePower);
+
+  const txReward = throughputMbps + modulationPenalty - 0.02 * txPower;
+  const jamReward = jammingIntensity * jamPower - 0.08 * throughputMbps;
+
+  if (!state.freezeLearning) {
+    state.tx.q[txIdx] += state.tx.lr * (txReward - state.tx.q[txIdx]);
+    if (state.jamAdaptive) {
+      state.jam.q[jamIdx] += state.jam.lr * (jamReward - state.jam.q[jamIdx]);
+    }
+  }
+
+  state.tx.lastAction = { ...txAct, txBin };
+  state.jam.lastAction = { ...jamAct, jamCenter, spanBins: jamSpanBins };
+
+  state.history.push({
+    t: state.t,
+    throughputMbps,
+    jammingIntensity,
+    sinrDb,
+    overlapFactor,
+    tx: state.tx.lastAction,
+    jam: state.jam.lastAction,
+  });
+
+  if (state.history.length > HISTORY_POINTS) state.history.shift();
+  state.t += 1;
+
+  updateCharts();
+  drawSpectrum();
+  renderTimeline();
+  renderState();
+}
+
+// ================= MAIN =================
+
+function main() {
+  setupDomRefs();
+  state.spectrumCtx = dom.spectrumCanvas.getContext("2d");
+  resetSimulation();
+  attachHandlers();
+  setInterval(() => {
+    if (!state.paused) stepSimulation();
+  }, 350);
+}
+
+document.addEventListener("DOMContentLoaded", main);    "txPowerInput",
     "lrInput",
     "epsInput",
     "freezeLearningToggle",
@@ -405,3 +609,4 @@ function main() {
 }
 
 document.addEventListener("DOMContentLoaded", main);
+
